@@ -217,3 +217,258 @@ ________________________________________
 ☐	Produce a packaged static demo and a preset walkthrough.
 ________________________________________
 Draft v0.1 – intended to be iterated after Q&A.
+
+
+
+
+XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+
+
+
+
+
+Master Build Prompt — “Recipe Unlocks” (Riverford)
+
+Act as: a senior Frontend + Data engineer.
+Deliver: a single-page static web app (React + Vite + TypeScript + Tailwind) that runs locally, loading 4 local data files, and implementing strict recipe-unlock logic, dynamic add-ons, and “Perfect Combos”. Prioritise clarity, performance, and Riverford-style UI.
+
+0) Data locations (mounted locally in the sandbox)
+
+/mnt/data/veg_boxes.csv
+
+Includes at least: box_name, price_gbp, contents (semicolon-separated items with weights/notes in parentheses), image_url (optional).
+
+/mnt/data/recipes_normalized.json (primary) and /mnt/data/recipes_ALL_raw.json (optional fallback).
+
+/mnt/data/pantry_STRICT_v3_full.json
+
+/mnt/data/products_raw.json (GraphQL-style: data.category.products.hits[].document with name, sku, price).
+
+If any file is missing, the app should show a friendly “Load sample data” stub and a clear error banner.
+
+1) Core goal (what the app must show)
+
+For a chosen veg box, with a tickable pantry and add-on recommendations, show:
+
+a large Unlocked Recipes count (strictly computed) with diff badges vs Before (baseline),
+
+an itemised Basket total that updates only when users add paid items,
+
+a dynamic list of unlocked recipe titles under the current configuration.
+
+Strict means no false unlocks: a recipe only unlocks if all required tokens are present.
+
+2) Tokenisation & strict matching (no fuzzy unlocks)
+
+Create a shared normaliser for strings from recipes, veg boxes, pantry, and products:
+
+Lowercase; strip content in parentheses; remove punctuation & units; replace hyphens with spaces; collapse whitespace.
+
+Drop stopwords/descriptors such as:
+g, kg, ml, l, tbsp, tsp, heaped, level, pinch, sprig, bunch, bunches, handful, small, large, medium, extra, organic, seasonal, box, bundle, pack, free-range, smoked, unsmoked, baby, new, salad, little, gem, romaine.
+
+Conservative singularisation (examples): tomatoes→tomato, potatoes→potato; do not break words like “lettuce”.
+
+Synonyms map (seed list — make extendable in code):
+courgette↔zucchini, chickpea↔garbanzo, spring onion↔scallion, aubergine↔eggplant, mange tout↔mange tout; plurals for common veg (carrots→carrot, mushrooms→mushroom, etc.).
+
+No fuzzy substitution: lemon ≠ lime; keep pepper (spice) distinct from bell pepper if your tokens would collide.
+
+Recipes: prefer required_keys from recipes_normalized.json; fall back to other ingredient fields or recipes_ALL_raw.json if a recipe has no tokens after normalisation.
+
+3) Data parsing details
+Veg boxes (veg_boxes.csv)
+
+Parse contents by splitting on ;. For each part:
+
+Strip parentheses (e.g., “(400g)”).
+
+Normalise to tokens and keep only meaningful ingredient tokens.
+
+Price is price_gbp (numeric). Use this as the baseline Basket total.
+
+Pantry (pantry_STRICT_v3_full.json)
+
+Items have at least ingredient_key. Consider purchasable if also_product truthy or product_skus present.
+
+Use min_price (GBP, may be a string like “£2.15”) when a purchasable pantry item is (re)added by the user (see rules below).
+
+Products (products_raw.json)
+
+Flatten from data.category.products.hits[].document. Extract name, sku, price. Drop “veg box” items (name contains “veg box” or sku starts FINBOX).
+
+Derive IngredientContribution(product) from name tokens, but filter tokens to the global recipe token universe to avoid false matches.
+If a product name yields no meaningful tokens, exclude it from recommendations.
+
+4) Unlock logic & basket rules
+“Available” tokens at any time =
+
+Tokens(SelectedVegBox.contents) ∪ Tokens(All currently ticked pantry items) ∪ Tokens(All explicitly added add-ons)
+
+Baseline (“Before”) state
+
+All pantry items ticked (selected) by default.
+
+Basket total = price_gbp of selected veg box only (no pantry costs at start).
+
+Pantry behaviour
+
+Untick any pantry item → token removed; no price change.
+
+Retick a purchasable pantry item that had been unticked → treat as an explicit add; add min_price to Basket.
+
+Unticking that item again removes its price.
+
+Add-ons
+
+Add/remove add-on products explicitly changes availability (tokens) and updates the Basket by product price.
+
+Basket total
+
+Basket = VegBoxPrice + Σ(AddedAddOnPrices) + Σ(AddedPurchasablePantryPrices)
+
+5) Recommendations (maximise unlocks, “honest mode”, cap=10)
+Single-item marginal gain
+
+For each candidate product p (excluding veg boxes):
+
+NewAvailable = Available ∪ IngredientContribution(p)
+UnlockedWith(p) = { r | Tokens(r) ⊆ NewAvailable } − BaseUnlocked
+Gain(p) = |UnlockedWith(p)|
+
+Greedy Top-10 (max coverage)
+
+Iteratively pick the p with largest Gain. Ties: recipes-per-£ (i.e., price/Gain, ascending), then lower price, then name.
+
+Recompute on every veg-box change and pantry toggle.
+
+Honest mode default: only show items with Gain > 0 in the primary list. If that yields fewer than 10, we may fill with combos (below).
+
+Perfect Combos (pairs, optionally trios)
+
+Compute pairs (and optionally trios) whose union of tokens unlocks recipes (combined unlocks).
+
+Rank by combined unlocks, tie-break by recipes-per-£ (combined), then combined price.
+
+Section title: Perfect Combos. Badge: “Perfect Combo: +X together”. Button: “Add combo” (adds all items).
+
+Cap total recommendations at 10: show all singles with Gain>0 first; if fewer than 10, add the best Perfect Combos until reaching 10 (or you run out).
+
+(Optional) A secondary “Near-miss setup” panel can show items with +0 alone that turn many recipes to “missing just 1”. Keep it collapsed by default.
+
+6) UI/UX (Riverford-styled)
+
+Stack: React + Vite + TypeScript + Tailwind; state with Zustand or Redux Toolkit.
+
+Header: veg-box selector (from CSV), price, short copy.
+
+Hero row:
+
+Big circle: Unlocked Recipes (current). Show diff badges vs baseline: “+X recipes”, and next to Basket show “+£Y”.
+
+Basket card: itemised list (veg box, add-ons, paid pantry), running total.
+
+Left column: Pantry list with search/filter, “Untick all” / “Tick all”. Purchasable pantry items get a price chip (no cost until re-ticked after untick).
+
+Right column:
+
+Recommended add-ons (singles): cards with name, price, “+X recipes” badge, and Add/Remove.
+
+Perfect Combos: combined price, “Perfect Combo: +X together”, Add combo.
+
+Footer: list currently unlocked recipes (auto-updates). Show recipe title and a small ingredient hint line.
+
+A/B toggle: a switch to flip the recipes list and counts between Before (baseline) and After (current).
+
+Accessibility: keyboard focus rings, ARIA labels, AA contrast, responsive layout (mobile first).
+
+Brand: use a clean, fresh aesthetic (muted greens/earthy neutrals). If the Riverford font is available locally, load it via @font-face; otherwise fall back to a friendly serif/sans stack.
+
+7) Dietary filters (only if data supports it)
+
+Implement Vegetarian, Vegan, Gluten-free toggles only if you can classify from data reliably.
+
+Classification = conservative keyword checks in recipe tokens:
+
+Animal: beef, chicken, pork, lamb, fish, anchovy, tuna, salmon, egg, milk, butter, cheese, yogurt/yoghurt, honey, gelatine/gelatin, ham, bacon
+
+Gluten: wheat, flour, bread, pasta, bulgur, farro, barley, rye, oats, seitan, noodle, breadcrumbs, semolina, spelt, beer, ale, malt, soy sauce
+
+If signal is weak, hide the toggles.
+
+8) Analytics (prototype-local)
+
+Capture in memory (and allow JSON export):
+
+Baseline unlocked count, current unlocked count, items added/removed, per-item Gain, recipes-per-£, combo selections, and final Basket total.
+
+9) Acceptance criteria (must pass)
+
+Strict matching only; no false unlocks.
+
+Honest mode: primary list shows only items/combos with Gain>0 under current state.
+
+Cap 10 recommendations total; singles prioritised; Perfect Combos fill any remaining slots.
+
+Before/After snapshot and diff badges visible and correct.
+
+Basket rules honoured:
+
+baseline = veg box price only;
+
+untick pantry = no price change;
+
+re-tick purchasable pantry (after untick) = add its min_price;
+
+add-on add/remove changes Basket by product price.
+
+Dynamic recompute when the user changes veg box or pantry state.
+
+Responsive, accessible UI with clear buttons and price badges.
+
+Unlocked recipes list updates deterministically on any change.
+
+10) Developer ergonomics
+
+Keep the normaliser, synonyms, and keyword lists in a dedicated module that’s easy to extend.
+
+Memoise pre-tokenised recipes and product tokens.
+
+Provide a simple query string/state serialisation if easy (optional).
+
+11) Default demo state (if user loads the page fresh)
+
+Preselect “Seasonal organic veg box – medium” (if present in CSV).
+
+Pantry: all ticked.
+
+Recommendations and counts computed on load.
+
+Provide a second example: “Quick organic veg box – small” in the selector.
+
+12) Output & packaging
+
+Produce a static build (Vite).
+
+Include simple README in the app: how to run locally, where data files are read from, and where to change brand colours/fonts.
+
+13) Nice-to-have (time-permitting)
+
+Toast on add/remove: “Added Pointed cabbage (+1 recipe)”.
+
+Tooltip on cards: e.g., “Unlocks soups & stir-fries”.
+
+“See more combos” collapsible panel if we have additional combos beyond the cap.
+
+14) What to do now
+
+Scaffold the app.
+
+Implement the data loaders & normaliser.
+
+Implement strict unlock engine, greedy singles, Perfect Combos, and basket logic.
+
+Build the Riverford-style UI with the big circle, diff badges, pantry list, add-ons grid, Perfect Combos, and the unlocked recipe list.
+
+Test with both Seasonal organic veg box – medium and Quick organic veg box – small.
